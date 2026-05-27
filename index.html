@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entropy Grid — a genuine random number generator to replace psuedo random number generators</title>
+  <meta name="description" content="Real-time random number generation from microphone thermal noise, visualised as a 100×100 heatmap grid.">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- ── Header ── -->
+  <header class="app-header">
+    <div class="header-title">
+      <h1>Entropy Grid — a genuine random number generator to replace psuedo random number generators</h1>
+      <p>Thermal noise → LSB extraction → SHA-256 → 0–9</p>
+    </div>
+    <div class="header-controls">
+      <div id="status-pill" class="status-pill stopped">
+        <span class="dot"></span>
+        <span id="status-text">Stopped</span>
+      </div>
+      <!-- Grid size selector — segmented control -->
+      <div class="seg-control" role="group" aria-label="Grid size">
+        <button class="seg-btn" data-size="20"  aria-pressed="false">20×20</button>
+        <button class="seg-btn" data-size="50"  aria-pressed="false">50×50</button>
+        <button class="seg-btn seg-btn--active" data-size="100" aria-pressed="true">100×100</button>
+      </div>
+      <button id="start-btn" class="btn btn-primary">Start</button>
+      <button id="stop-btn" class="btn" disabled>Stop</button>
+    </div>
+  </header>
+
+  <!-- ── Main ── -->
+  <main class="app-main">
+
+    <!-- Chi-squared stats bar -->
+    <div id="stats-bar" class="stats-bar">
+      <span>χ² = <strong>—</strong></span>
+      <span>df = <strong>9</strong></span>
+      <span>p = <strong>—</strong></span>
+      <span>n = <strong>0</strong></span>
+    </div>
+
+    <div class="content-grid">
+
+      <!-- Grid panel -->
+      <div class="grid-panel">
+        <div id="panel-label" class="panel-label">100 × 100 Digit Grid</div>
+
+        <!-- Inline seeding bar — only visible during pool seeding -->
+        <div id="seeding-bar-wrap" class="seeding-bar-wrap hidden">
+          <div class="seeding-bar-label">
+            <span>Seeding entropy pool</span>
+            <span id="seed-pct">0%</span>
+          </div>
+          <div class="seeding-bar-track">
+            <div id="entropy-bar" class="seeding-bar-fill"></div>
+          </div>
+        </div>
+
+        <div class="grid-wrapper">
+          <div id="digit-grid" role="img" aria-label="100 by 100 grid of randomly generated digits 0 through 9, colour-coded by statistical deviation"></div>
+        </div>
+
+        <!-- Heatmap legend -->
+        <div class="legend" style="margin-top: 12px;">
+          <span class="legend-label">under-represented</span>
+          <div class="legend-gradient"></div>
+          <span class="legend-label">over-represented</span>
+        </div>
+      </div>
+
+      <!-- Histogram + Info column -->
+      <div class="side-column">
+
+        <div class="histogram-panel">
+          <div class="panel-label">Digit Frequency</div>
+          <div id="histogram"></div>
+        </div>
+
+        <!-- Info panel -->
+        <aside class="info-panel">
+          <div class="panel-label">About This Project</div>
+
+          <p class="info-body">
+            Entropy Grid harvests genuine randomness from the microscopic thermal
+            noise inside your laptop's microphone pre-amplifier, the same chaotic
+            electron movement that makes it physically impossible to predict the
+            next sample value.
+          </p>
+
+          <div class="info-section">
+            <h3 class="info-heading">Pipeline</h3>
+            <ol class="pipeline-steps">
+              <li>
+                <span class="step-tag">Capture</span>
+                Raw audio at 48 kHz via <code>AudioWorklet</code>, with echo
+                cancellation, noise suppression and auto-gain all disabled.
+              </li>
+              <li>
+                <span class="step-tag">Extract</span>
+                The 2 least-significant bits of each IEEE 754 float32 sample
+                are read directly from its binary memory representation.
+              </li>
+              <li>
+                <span class="step-tag">Debias</span>
+                Von Neumann debiasing consumes bit pairs: only transitions
+                (01 → 0, 10 → 1) are kept, discarding correlated pairs (00, 11).
+                This removes any DC offset from ADC non-linearity.
+              </li>
+              <li>
+                <span class="step-tag">Whiten</span>
+                Every 256 debiased bits are hashed with SHA-256, destroying
+                any residual autocorrelation and producing 32 bytes of
+                cryptographically uniform output.
+              </li>
+              <li>
+                <span class="step-tag">Sample</span>
+                Rejection sampling maps hash bytes to digits 0–9 without
+                modulo bias.
+              </li>
+            </ol>
+          </div>
+
+          <div class="info-section">
+            <h3 class="info-heading">Key Equations</h3>
+
+            <div class="eq-block">
+              <span class="eq-label">Rejection threshold</span>
+              <code class="eq">b &lt; 250
+  → digit = b mod 10</code>
+              <p class="eq-note">
+                250 is the largest multiple of 10 that fits in a byte.
+                Each digit has exactly P = 25/250 = 1/10 probability.
+                Bytes ≥ 250 are discarded to eliminate modulo bias.
+              </p>
+            </div>
+
+            <div class="eq-block">
+              <span class="eq-label">Z-score (heatmap colour)</span>
+              <code class="eq">z = (O − E) / √E</code>
+              <p class="eq-note">
+                O = observed count for a digit, E = n/10 (expected under
+                uniform H₀). Cells glow blue when under-represented
+                (z &lt; −1.96) and red when over-represented (z &gt; +1.96),
+                both significant at p &lt; 0.05.
+              </p>
+            </div>
+
+            <div class="eq-block">
+              <span class="eq-label">Chi-squared goodness-of-fit</span>
+              <code class="eq">χ² = Σ (Oᵢ − E)² / E</code>
+              <p class="eq-note">
+                Summed over all 10 digits with 9 degrees of freedom.
+                A p-value &gt; 0.05 means the distribution is statistically
+                consistent with true uniformity. The p-value is computed
+                via the Wilson-Hilferty cube-root normal approximation
+                to avoid a gamma function lookup table.
+              </p>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3 class="info-heading">Trend Analysis</h3>
+            <p class="info-body">
+              The chart below the grid runs three independent statistical tests
+              simultaneously, giving a live verdict on whether the numbers being
+              generated are genuinely random. Each test catches a different kind
+              of hidden pattern — serial links between numbers, clustering, and
+              distributional bias — so together they provide a much more complete
+              picture than any single test alone. The longer the grid runs, the
+              more data the tests have to work with and the more reliable their
+              verdict becomes.
+            </p>
+          </div>
+        </aside>
+
+      </div><!-- /side-column -->
+
+    </div>
+
+    <!-- ── Trend Chart panel ── -->
+    <div class="trend-panel">
+      <div class="trend-header">
+        <div class="panel-label" style="margin-bottom:0">Randomness Trend Analysis</div>
+        <div class="trend-meta">
+          <span class="trend-badge" id="trend-r1">r₁ = —</span>
+          <span class="trend-badge" id="trend-runs">runs Z = —</span>
+          <span class="trend-badge" id="trend-verdict">—</span>
+        </div>
+      </div>
+      <svg id="trend-svg" class="trend-svg" aria-label="Randomness trend chart showing autocorrelation, runs test and chi-squared p-value over time"></svg>
+      <p class="trend-note">
+        Lag-1 autocorrelation (r₁) and Wald-Wolfowitz runs Z-score should remain within the ±1.96 confidence band (shaded) for a truly random sequence.
+        The χ² p-value should stay above 0.05. All metrics converge as sample size grows.
+      </p>
+
+      <!-- Plain-english guide -->
+      <div class="trend-guide">
+
+        <div class="trend-guide-item">
+          <span class="trend-guide-swatch" style="background:#4fc3f7"></span>
+          <div>
+            <strong>Cyan line — Serial Correlation</strong>
+            <p>Asks: does each number influence the next one? If the numbers are truly random, knowing the current number tells you nothing about the next. This line should stay flat and close to zero. If it drifts up or down it means the numbers are subtly linked — like a coin that tends to land the same way twice in a row.</p>
+          </div>
+        </div>
+
+        <div class="trend-guide-item">
+          <span class="trend-guide-swatch" style="background:#f5a623"></span>
+          <div>
+            <strong>Amber line — Clustering &amp; Alternation</strong>
+            <p>Asks: are the numbers clumping together or ping-ponging back and forth? Truly random numbers should mix freely — sometimes a few high ones in a row, sometimes a few low ones, but no strong pattern. This line should wander loosely around zero. A large spike upward means too much alternating; a large dip means too much clustering.</p>
+          </div>
+        </div>
+
+        <div class="trend-guide-item">
+          <span class="trend-guide-swatch" style="background:#1a6cf5"></span>
+          <div>
+            <strong>Blue line — Distribution Fairness</strong>
+            <p>Asks: is every digit (0–9) appearing roughly the same number of times? A fair random source should produce each digit about 10% of the time. This line measures how confident we are that the distribution is fair. It should stay <em>above</em> the dashed threshold line. If it drops below, one or more digits are appearing suspiciously too often or too rarely.</p>
+          </div>
+        </div>
+
+        <div class="trend-guide-item">
+          <span class="trend-guide-swatch trend-guide-swatch--dashed"></span>
+          <div>
+            <strong>Dashed line — Significance Boundary</strong>
+            <p>This is the boundary between “probably fine” and “something looks off”. The cyan and amber lines should stay <em>between</em> the two dashed boundaries. The blue line should stay <em>above</em> the lower dashed line. Occasional crossings are normal — even a perfect random source will stray outside the boundary roughly 1 in 20 times by chance. Persistent crossings are the warning sign.</p>
+          </div>
+        </div>
+
+        <div class="trend-guide-item trend-guide-item--tip">
+          <span class="trend-guide-swatch" style="background: var(--accent-green)"></span>
+          <div>
+            <strong>What good looks like</strong>
+            <p>All three lines staying within their boundaries, with the chart becoming steadier and more stable as more numbers are generated. The longer it runs, the more trustworthy the verdict. Early on (under ~500 samples) the lines will jump around — that is normal and expected.</p>
+          </div>
+        </div>
+
+      </div><!-- /trend-guide -->
+    </div>
+
+  </main>
+
+  <!-- ── Footer ── -->
+  <footer class="app-footer">
+    <p class="footer-note">
+      Entropy source: microphone thermal noise (48 kHz, 2 LSBs/sample, Von Neumann debiased)<br>
+      Whitening: SHA-256 · Sampling: rejection (b &lt; 250) · Test: χ² goodness-of-fit, df=9
+    </p>
+    <p class="footer-credit">by Rozario Chivers &amp; Claude Code</p>
+  </footer>
+
+</div>
+
+<script type="module">
+  import { EntropyPool } from './js/entropy-pool.js';
+  import { RNG }         from './js/rng.js';
+  import { Heatmap }     from './js/heatmap.js';
+  import { Grid }        from './js/grid.js';
+  import { Analyser }    from './js/analyser.js';
+  import { TrendChart }  from './js/trend-chart.js';
+
+  // ── DOM refs ──
+  const startBtn       = document.getElementById('start-btn');
+  const stopBtn        = document.getElementById('stop-btn');
+  const statusPill     = document.getElementById('status-pill');
+  const statusText     = document.getElementById('status-text');
+  const statsBar       = document.getElementById('stats-bar');
+  const seedingBarWrap = document.getElementById('seeding-bar-wrap');
+  const entropyBar     = document.getElementById('entropy-bar');
+  const seedPct        = document.getElementById('seed-pct');
+  const digitGridEl    = document.getElementById('digit-grid');
+  const panelLabel     = document.getElementById('panel-label');
+  const segBtns        = document.querySelectorAll('.seg-btn');
+
+  // ── Trend chart — singleton, persists across sessions ──
+  const trendChart = new TrendChart(document.getElementById('trend-svg'));
+  trendChart.reset();
+
+  // ── Size state ──
+  let selectedSize = 100;
+
+  function setSize(size) {
+    selectedSize = size;
+    panelLabel.textContent = `${size} × ${size} Digit Grid`;
+    segBtns.forEach(btn => {
+      const active = Number(btn.dataset.size) === size;
+      btn.classList.toggle('seg-btn--active', active);
+      btn.setAttribute('aria-pressed', active);
+    });
+    // Rebuild placeholder at new size when idle
+    Grid.buildPlaceholder(digitGridEl, size);
+  }
+
+  segBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      setSize(Number(btn.dataset.size));
+    });
+  });
+
+  // ── Render placeholder on page load ──
+  Grid.buildPlaceholder(digitGridEl, selectedSize);
+
+  // ── Module instances — recreated fresh on each Start ──
+  let pool, rng, heatmap, grid;
+
+  // ── Session guard — incremented on every Start, checked in all async callbacks ──
+  // Prevents a stale pool.ready / pool.update from a previous session
+  // overwriting UI state after Stop has been pressed.
+  let sessionId = 0;
+
+  function createModules() {
+    const capturedSession = sessionId;
+
+    pool    = new EntropyPool();
+    rng     = new RNG(pool);
+    heatmap = new Heatmap();
+    const analyser = new Analyser(heatmap);
+    grid    = new Grid(
+      digitGridEl,
+      document.getElementById('histogram'),
+      statsBar,
+      rng,
+      heatmap,
+      selectedSize,
+      analyser,
+      trendChart
+    );
+    grid.init();
+
+    pool.addEventListener('update', () => {
+      if (capturedSession !== sessionId) return;
+      const pct = Math.min(100, Math.round(
+        (pool._totalBits / EntropyPool.MIN_BITS) * 100
+      ));
+      entropyBar.style.width = `${pct}%`;
+      seedPct.textContent = `${pct}%`;
+    });
+
+    pool.addEventListener('ready', () => {
+      if (capturedSession !== sessionId) return;
+      setStatus('running', 'Running');
+      seedingBarWrap.classList.add('hidden');
+      stopBtn.disabled = false;
+      grid.start();
+    });
+
+    pool.addEventListener('error', () => {
+      if (capturedSession !== sessionId) return;
+      setStatus('stopped', 'Stopped');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      seedingBarWrap.classList.add('hidden');
+      setSizeControlsDisabled(false);
+      Grid.buildPlaceholder(digitGridEl, selectedSize);
+    });
+  }
+
+  // ── Status helper ──
+  function setStatus(state, label) {
+    statusPill.className = `status-pill ${state}`;
+    statusText.textContent = label;
+  }
+
+  // ── Lock / unlock size controls ──
+  function setSizeControlsDisabled(disabled) {
+    segBtns.forEach(btn => btn.disabled = disabled);
+  }
+
+  // ── Reset UI to initial state ──
+  function resetUI() {
+    setStatus('stopped', 'Stopped');
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    seedingBarWrap.classList.add('hidden');
+    entropyBar.style.width = '0%';
+    seedPct.textContent = '0%';
+    setSizeControlsDisabled(false);
+    statsBar.innerHTML =
+      '<span>χ² = <strong>—</strong></span>' +
+      '<span>df = <strong>9</strong></span>' +
+      '<span>p = <strong>—</strong></span>' +
+      '<span>n = <strong>0</strong></span>';
+  }
+
+  // ── Start ──
+  startBtn.addEventListener('click', async () => {
+    sessionId++;          // new session, invalidates any previous in-flight callbacks
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+    setSizeControlsDisabled(true);
+    setStatus('running', 'Running');
+    entropyBar.style.width = '0%';
+    seedPct.textContent = '0%';
+    seedingBarWrap.classList.remove('hidden');
+    createModules();
+    await pool.start();
+  });
+
+  // ── Stop — invalidate session, full teardown, restore placeholder ──
+  stopBtn.addEventListener('click', () => {
+    sessionId++;          // invalidates all in-flight callbacks from this session
+    grid.destroy();
+    pool.stop();
+    trendChart.reset();
+    Grid.buildPlaceholder(digitGridEl, selectedSize);
+    resetUI();
+  });
+</script>
+
+</body>
+</html>
